@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Find the Clock Game</title>
+<style>
+  body { margin:0; overflow:hidden; font-family:Arial, sans-serif; background:#e0f7fa; user-select:none; }
+  canvas { position:absolute; top:0; left:0; z-index:1; }
+  #levelSelect {
+    position:absolute; top:50%; left:50%;
+    transform:translate(-50%, -50%);
+    font-size:24px;
+    background:rgba(255,255,255,0.95);
+    padding:20px; border-radius:15px; text-align:center;
+    z-index:10;
+  }
+  button { font-size:20px; margin:10px; padding:10px 20px; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<div id="levelSelect">
+  <h2>Select Level</h2>
+  <button onclick="startGame(1)">Level 1: Hours</button>
+  <button onclick="startGame(2)">Level 2: Half Hours</button>
+</div>
+
+<audio id="tick" src="https://freesound.org/data/previews/66/66717_931655-lq.mp3" loop></audio>
+<audio id="ding" src="https://freesound.org/data/previews/522/522858_9454746-lq.mp3"></audio>
+<audio id="chime" src="https://freesound.org/data/previews/348/348411_3248244-lq.mp3"></audio>
+<audio id="finalSound" src="https://freesound.org/data/previews/250/250629_4486188-lq.mp3" preload="auto"></audio>
+
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const tickSound = document.getElementById('tick');
+const ding = document.getElementById('ding');
+const chime = document.getElementById('chime');
+const finalSound = document.getElementById('finalSound');
+
+ding.volume = 0.5;
+chime.volume = 0.5;
+finalSound.volume = 0.6;
+
+let level = 1, score = 0, timeLeft = 60;
+let clocks = [], sparkles = [], wrongClicks = [];
+let restartButton = null;
+const numClocks = 6, clockRadius = 88;
+let speed = 1.5;
+let timerInterval;
+let gameOver = false;
+
+// Play area 90% of screen
+const boxWidth = canvas.width * 0.9;
+const boxHeight = canvas.height * 0.9;
+const boxX = (canvas.width - boxWidth)/2;
+const boxY = (canvas.height - boxHeight)/2;
+const infoBoxHeight = 50;
+
+// Mouse and target time
+let mouseX = 0, mouseY = 0;
+let targetTimeString = '';
+
+// For pulsing TIME HUNTER
+let pulseTime = 0;
+
+// Utility functions
+function randomInt(min,max){ return Math.floor(Math.random()*(max-min+1))+min; }
+function randomTime(){ 
+  let hour = randomInt(1,12);
+  let minute = (level===1)?0:(Math.random()<0.5?0:30);
+  return {hour, minute}; 
+}
+function timeToString(time){ return `${time.hour}:${time.minute.toString().padStart(2,'0')}`; }
+function randomColor(){ const r=randomInt(150,255), g=randomInt(150,255), b=randomInt(150,255); return `rgb(${r},${g},${b})`; }
+
+// Draw clock
+function drawClock(x,y,radius,time,color){
+  ctx.save();
+  ctx.shadowColor='rgba(0,0,0,0.3)'; ctx.shadowBlur=8; ctx.shadowOffsetX=3; ctx.shadowOffsetY=3;
+  ctx.beginPath(); ctx.arc(x,y,radius,0,2*Math.PI); ctx.fillStyle=color; ctx.fill();
+  ctx.strokeStyle='#000'; ctx.lineWidth=3; ctx.stroke();
+  ctx.fillStyle='#000'; ctx.font=`${radius*0.3}px Arial`; ctx.textAlign='center'; ctx.textBaseline='middle';
+  for(let n=1;n<=12;n++){ let ang=n*Math.PI/6; let nx=x+Math.sin(ang)*(radius*0.8); let ny=y-Math.cos(ang)*(radius*0.8); ctx.fillText(n,nx,ny);}
+  let hrAng=((time.hour%12 + time.minute/60)*Math.PI/6); let minAng=(time.minute*Math.PI/30);
+  ctx.strokeStyle='black'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+radius*0.5*Math.sin(hrAng),y-radius*0.5*Math.cos(hrAng)); ctx.stroke();
+  ctx.strokeStyle='red'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+radius*0.7*Math.sin(minAng),y-radius*0.7*Math.cos(minAng)); ctx.stroke();
+  ctx.restore();
+}
+
+// Generate clocks
+function generateClocks(){
+  clocks = []; wrongClicks = [];
+  let positions = [];
+  let correctIndex = Math.floor(Math.random()*numClocks); 
+  let targetTime = randomTime(); 
+  targetTimeString = timeToString(targetTime);
+
+  for(let i=0;i<numClocks;i++){
+    let time = (i===correctIndex)? targetTime : (()=>{ let t; do { t=randomTime(); } while(t.hour===targetTime.hour && t.minute===targetTime.minute); return t; })();
+    let x, y, tries=0;
+    do { 
+      x=randomInt(boxX+clockRadius, boxX+boxWidth-clockRadius); 
+      y=randomInt(boxY+infoBoxHeight+clockRadius, boxY+boxHeight-clockRadius); 
+      tries++; 
+    } while(positions.some(p => Math.hypot(p.x-x,p.y-y)<clockRadius*2) && tries<100);
+    positions.push({x,y});
+    let angle=Math.random()*2*Math.PI;
+    let vx=Math.cos(angle)*speed, vy=Math.sin(angle)*speed;
+    clocks.push({x,y,vx,vy,time,color:randomColor(), correct:i===correctIndex});
+  }
+
+  let utterance = new SpeechSynthesisUtterance(targetTimeString);
+  speechSynthesis.speak(utterance);
+}
+
+// Sparkles
+function createSparkles(x,y){
+  for(let i=0;i<20;i++){
+    let angle=Math.random()*2*Math.PI; let speed=Math.random()*3+1;
+    sparkles.push({x,y,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed,life:30+randomInt(0,15),color:`hsl(${Math.random()*360},100%,70%)`});
+  }
+}
+
+// Update clocks and sparkles
+function updateClocks(){
+  if(gameOver) return; 
+  for(let i=0;i<clocks.length;i++){
+    let c=clocks[i]; 
+    c.vx+=(Math.random()-0.5)*0.05; 
+    c.vy+=(Math.random()-0.5)*0.05;
+    let mag=Math.hypot(c.vx,c.vy); 
+    if(mag>speed){c.vx=(c.vx/mag)*speed;c.vy=(c.vy/mag)*speed;}
+    c.x+=c.vx; c.y+=c.vy;
+
+    if(c.x<boxX+clockRadius){c.x=boxX+clockRadius;c.vx*=-1;} 
+    if(c.x>boxX+boxWidth-clockRadius){c.x=boxX+boxWidth-clockRadius;c.vx*=-1;}
+    if(c.y<boxY+infoBoxHeight+clockRadius){c.y=boxY+infoBoxHeight+clockRadius;c.vy*=-1;} 
+    if(c.y>boxY+boxHeight-clockRadius){c.y=boxY+boxHeight-clockRadius;c.vy*=-1;}
+
+    for(let j=i+1;j<clocks.length;j++){
+      let c2=clocks[j]; let dx=c2.x-c.x; let dy=c2.y-c.y; let dist=Math.hypot(dx,dy);
+      if(dist<clockRadius*2){ let angle=Math.atan2(dy,dx); let overlap=clockRadius*2-dist;
+        c.x-=Math.cos(angle)*overlap/2; c.y-=Math.sin(angle)*overlap/2; c2.x+=Math.cos(angle)*overlap/2; c2.y+=Math.sin(angle)*overlap/2;
+      }
+    }
+  }
+  for(let i=sparkles.length-1;i>=0;i--){ let s=sparkles[i]; s.x+=s.vx; s.y+=s.vy; s.life--; if(s.life<=0)sparkles.splice(i,1);}
+}
+
+// Draw function continues in next message...
+// Draw everything
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // Play area
+  ctx.fillStyle='rgba(255,255,255,0.8)';
+  ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+  ctx.strokeStyle='black'; ctx.lineWidth = 4;
+  ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+  // Info box
+  ctx.fillStyle='rgba(255,255,255,0.9)';
+  ctx.fillRect(boxX, boxY, boxWidth, infoBoxHeight);
+  ctx.strokeStyle='black'; ctx.lineWidth = 3;
+  ctx.strokeRect(boxX, boxY, boxWidth, infoBoxHeight);
+
+  // Score
+  ctx.fillStyle = 'red';
+  ctx.font = '24px Arial';
+  ctx.textAlign = 'left';
+  ctx.fillText(`Score: ${score}`, boxX + 20, boxY + 35);
+
+  // Timer
+  ctx.textAlign = 'right';
+  ctx.fillText(`Time: ${timeLeft}`, boxX + boxWidth - 20, boxY + 35);
+
+  // TIME HUNTER label with pulse, color cycle, and glow
+  pulseTime += 0.05;
+  const scale = 1 + 0.1 * Math.sin(pulseTime*2); // pulse size
+  const colorValue = Math.floor(127 + 128 * Math.sin(pulseTime)); // 0-255
+  const color = `rgb(${255-colorValue},0,${colorValue})`;
+  ctx.save();
+  ctx.font = `bold ${28*scale}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // Glow effect
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 15;
+  ctx.fillStyle = color;
+  ctx.fillText('TIME HUNTER', boxX + boxWidth/2, boxY + 35);
+  ctx.restore();
+
+  // Draw clocks
+  clocks.forEach(c=>drawClock(c.x,c.y,clockRadius,c.time,c.color));
+
+  // Wrong clicks X
+  wrongClicks.forEach(w=>{
+    const c = w.clock;
+    ctx.strokeStyle = 'red';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    let size = clockRadius * 0.5;
+    ctx.moveTo(c.x - size, c.y - size);
+    ctx.lineTo(c.x + size, c.y + size);
+    ctx.moveTo(c.x + size, c.y - size);
+    ctx.lineTo(c.x - size, c.y + size);
+    ctx.stroke();
+  });
+
+  // Sparkles
+  sparkles.forEach(s=>{
+    ctx.beginPath();
+    ctx.arc(s.x,s.y,3,0,2*Math.PI);
+    ctx.fillStyle=s.color;
+    ctx.fill();
+  });
+
+  // Target time under mouse, 2x bigger rectangle
+  if(!gameOver && targetTimeString){
+    const padding = 12; // double previous 6
+    ctx.font = '18px Arial';
+    const textWidth = ctx.measureText(targetTimeString).width;
+    const boxW = textWidth + padding*2;
+    const boxH = 48; // double previous 24
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.strokeStyle = 'black'; ctx.lineWidth = 2;
+    ctx.fillRect(mouseX - boxW/2, mouseY + 20, boxW, boxH);
+    ctx.strokeRect(mouseX - boxW/2, mouseY + 20, boxW, boxH);
+    ctx.fillStyle = 'black';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(targetTimeString, mouseX, mouseY + 44); // vertical center
+  }
+
+  // Game over box
+  if(gameOver){
+    const boxW = 300, boxH = 140;
+    const boxXCenter = boxX + (boxWidth - boxW)/2;
+    const boxYBottom = boxY + boxHeight - boxH - 20;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillRect(boxXCenter, boxYBottom, boxW, boxH);
+    ctx.strokeStyle = 'black'; ctx.lineWidth = 3;
+    ctx.strokeRect(boxXCenter, boxYBottom, boxW, boxH);
+    ctx.fillStyle = 'red'; ctx.font = '28px Arial'; ctx.textAlign = 'center';
+    ctx.fillText(`Time's up!`, boxXCenter + boxW/2, boxYBottom + 40);
+    ctx.fillText(`Your score: ${score}`, boxXCenter + boxW/2, boxYBottom + 75);
+
+    const btnW = 120, btnH = 35;
+    const btnX = boxXCenter + (boxW - btnW)/2;
+    const btnY = boxYBottom + 95;
+    ctx.fillStyle = '#4CAF50'; ctx.fillRect(btnX, btnY, btnW, btnH);
+    ctx.strokeStyle = 'black'; ctx.strokeRect(btnX, btnY, btnW, btnH);
+    ctx.fillStyle = 'white'; ctx.font = '20px Arial';
+    ctx.fillText('Restart', btnX + btnW/2, btnY + btnH/2 + 7);
+    restartButton = {x: btnX, y: btnY, w: btnW, h: btnH};
+  }
+}
+
+// Handle clicks
+function handleClick(e){
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if(gameOver && restartButton){
+    if(mx >= restartButton.x && mx <= restartButton.x + restartButton.w &&
+       my >= restartButton.y && my <= restartButton.y + restartButton.h){
+      resetGame(); return;
+    }
+  }
+
+  clocks.forEach(c=>{
+    if(Math.hypot(mx - c.x, my - c.y) <= clockRadius){
+      if(c.correct){ 
+        score++; createSparkles(c.x,c.y); ding.play(); chime.play(); generateClocks(); wrongClicks = [];
+      } else {
+        wrongClicks.push({clock: c});
+      }
+    }
+  });
+}
+
+// Reset game
+function resetGame(){
+  gameOver = false;
+  clocks = []; wrongClicks = []; sparkles = [];
+  score = 0; timeLeft = 60;
+  tickSound.pause(); tickSound.currentTime = 0;
+  document.getElementById('levelSelect').style.display = 'block';
+  restartButton = null;
+}
+
+// Game loop
+function gameLoop(){ updateClocks(); draw(); requestAnimationFrame(gameLoop); }
+
+// Start game
+function startGame(selectedLevel){
+  level = selectedLevel;
+  document.getElementById('levelSelect').style.display = 'none';
+  tickSound.play(); generateClocks(); canvas.addEventListener('click',handleClick);
+  gameLoop(); timeLeft = 60;
+
+  timerInterval = setInterval(()=>{
+    timeLeft--;
+    if(timeLeft <= 0){
+      clearInterval(timerInterval);
+      gameOver = true; tickSound.pause(); tickSound.currentTime = 0;
+      let utterance = new SpeechSynthesisUtterance(`Your final score is ${score}`);
+      speechSynthesis.speak(utterance);
+      utterance.onend = () => { finalSound.play(); };
+    }
+  },1000);
+}
+
+// Track mouse
+canvas.addEventListener('mousemove', (e)=>{
+  const rect = canvas.getBoundingClientRect();
+  mouseX = e.clientX - rect.left;
+  mouseY = e.clientY - rect.top;
+});
+</script>
+</body>
+</html>
